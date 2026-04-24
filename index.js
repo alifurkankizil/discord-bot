@@ -6,6 +6,7 @@ const { Client, GatewayIntentBits, Events } = require('discord.js');
 const ConnectionService = require('./src/services/ConnectionService');
 const PlayerService     = require('./src/services/PlayerService');
 const YouTubeService    = require('./src/services/YouTubeService');
+const QueueService      = require('./src/services/QueueService');
 
 // Commands
 const CommandRegistry = require('./src/commands/CommandRegistry');
@@ -16,6 +17,8 @@ const PauseCommand    = require('./src/commands/PauseCommand');
 const ResumeCommand   = require('./src/commands/ResumeCommand');
 const LeaveCommand    = require('./src/commands/LeaveCommand');
 const PingCommand     = require('./src/commands/PingCommand');
+const SkipCommand     = require('./src/commands/SkipCommand');
+const QueueCommand    = require('./src/commands/QueueCommand');
 
 const TOKEN  = process.env.DISCORD_TOKEN;
 const PREFIX = process.env.PREFIX || '!';
@@ -37,16 +40,19 @@ const client = new Client({
 const connectionService = new ConnectionService();
 const playerService     = new PlayerService();
 const youTubeService    = new YouTubeService();
+const queueService      = new QueueService();
 
 const registry = new CommandRegistry();
 
 registry.register(new JoinCommand(connectionService));
-registry.register(new PlayCommand(connectionService, playerService, youTubeService, client));
-registry.register(new StopCommand(playerService));
+registry.register(new PlayCommand(connectionService, playerService, youTubeService, queueService, client));
+registry.register(new StopCommand(playerService, queueService));
 registry.register(new PauseCommand(playerService));
 registry.register(new ResumeCommand(playerService));
-registry.register(new LeaveCommand(connectionService, playerService));
+registry.register(new LeaveCommand(connectionService, playerService, queueService));
 registry.register(new PingCommand(client));
+registry.register(new SkipCommand(playerService, queueService));
+registry.register(new QueueCommand(queueService));
 
 client.once(Events.ClientReady, () => {
     console.log(client.user.tag + ' hazir! (' + registry.all().length + ' komut yuklendi)');

@@ -13,6 +13,9 @@ class PlayerService {
     constructor() {
         /** @type {Map<string, import('@discordjs/voice').AudioPlayer>} */
         this._players = new Map();
+
+        /** @type {Map<string, Function>} */
+        this._idleCallbacks = new Map();
     }
 
     /**
@@ -32,6 +35,8 @@ class PlayerService {
 
         player.on(AudioPlayerStatus.Idle, () => {
             console.log(`[PlayerService] Guild ${guildId} — çalma bitti.`);
+            const cb = this._idleCallbacks.get(guildId);
+            if (cb) cb();
         });
 
         player.on('error', (error) => {
@@ -59,6 +64,33 @@ class PlayerService {
 
         player.play(resource);
         connection.subscribe(player);
+    }
+
+    /**
+     * Guild'de aktif olarak müzik çalınıyor mu?
+     *
+     * @param {string} guildId
+     * @returns {boolean}
+     */
+    isPlaying(guildId) {
+        const player = this._players.get(guildId);
+        if (!player) return false;
+        return (
+            player.state.status === AudioPlayerStatus.Playing ||
+            player.state.status === AudioPlayerStatus.Buffering ||
+            player.state.status === AudioPlayerStatus.Paused
+        );
+    }
+
+    /**
+     * Idle event'inde çağrılacak callback'i kaydet.
+     * Şarkı bitince otomatik olarak bir sonraki şarkıya geçmek için kullanılır.
+     *
+     * @param {string} guildId
+     * @param {Function} fn
+     */
+    setIdleCallback(guildId, fn) {
+        this._idleCallbacks.set(guildId, fn);
     }
 
     /**
@@ -98,11 +130,12 @@ class PlayerService {
     }
 
     /**
-     * Player'ı sil (bot kanaldan ayrıldığında).
+     * Player ve idle callback'i sil (bot kanaldan ayrıldığında).
      * @param {string} guildId
      */
     remove(guildId) {
         this._players.delete(guildId);
+        this._idleCallbacks.delete(guildId);
     }
 
     /**

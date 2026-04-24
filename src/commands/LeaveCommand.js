@@ -4,19 +4,21 @@ class LeaveCommand extends BaseCommand {
     /**
      * @param {import('../services/ConnectionService')} connectionService
      * @param {import('../services/PlayerService')}    playerService
+     * @param {import('../services/QueueService')}     queueService
      */
-    constructor(connectionService, playerService) {
+    constructor(connectionService, playerService, queueService) {
         super({
             name: 'leave',
             aliases: ['dc'],
-            description: 'Botu ses kanalından çıkarır.',
+            description: 'Botu ses kanalından çıkarır ve kuyruğu temizler.',
         });
         this._connection = connectionService;
         this._player     = playerService;
+        this._queue      = queueService;
     }
 
     async execute(message) {
-        const guildId = message.guild.id;
+        const guildId      = message.guild.id;
         const disconnected = this._connection.disconnect(guildId);
 
         if (!disconnected) {
@@ -24,6 +26,7 @@ class LeaveCommand extends BaseCommand {
         }
 
         this._player.remove(guildId);
+        this._queue.remove(guildId);
         message.reply('👋 Görüşürüz!');
     }
 }
