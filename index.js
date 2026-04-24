@@ -1,267 +1,71 @@
 require('dotenv').config();
 
-const TOKEN = process.env.DISCORD_TOKEN;
-const PREFIX = process.env.PREFIX || '!';  // Eğer .env'de yoksa ! kullan
+const { Client, GatewayIntentBits, Events } = require('discord.js');
+
+// Services
+const ConnectionService = require('./src/services/ConnectionService');
+const PlayerService     = require('./src/services/PlayerService');
+const YouTubeService    = require('./src/services/YouTubeService');
+
+// Commands
+const CommandRegistry = require('./src/commands/CommandRegistry');
+const JoinCommand     = require('./src/commands/JoinCommand');
+const PlayCommand     = require('./src/commands/PlayCommand');
+const StopCommand     = require('./src/commands/StopCommand');
+const PauseCommand    = require('./src/commands/PauseCommand');
+const ResumeCommand   = require('./src/commands/ResumeCommand');
+const LeaveCommand    = require('./src/commands/LeaveCommand');
+const PingCommand     = require('./src/commands/PingCommand');
+
+const TOKEN  = process.env.DISCORD_TOKEN;
+const PREFIX = process.env.PREFIX || '!';
 
 if (!TOKEN) {
-    console.error('❌ HATA: DISCORD_TOKEN .env dosyasında bulunamadı!');
-    console.error('Lütfen .env dosyası oluştur ve DISCORD_TOKEN=xxx şeklinde token\'ı ekle.');
+    console.error('HATA: DISCORD_TOKEN .env dosyasinda bulunamadi!');
     process.exit(1);
 }
-
-const { 
-    Client, 
-    GatewayIntentBits, 
-    Events,
-    EmbedBuilder 
-} = require('discord.js');
-const {
-    joinVoiceChannel,
-    createAudioPlayer,
-    createAudioResource,
-    AudioPlayerStatus,
-    VoiceConnectionStatus,
-    entersState,
-    getVoiceConnection,
-    StreamType
-} = require('@discordjs/voice');
-const { YouTube } = require('youtube-sr');
-const { spawn } = require('child_process');
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates
-    ]
+        GatewayIntentBits.GuildVoiceStates,
+    ],
 });
 
-const players = new Map();
+const connectionService = new ConnectionService();
+const playerService     = new PlayerService();
+const youTubeService    = new YouTubeService();
+
+const registry = new CommandRegistry();
+
+registry.register(new JoinCommand(connectionService));
+registry.register(new PlayCommand(connectionService, playerService, youTubeService, client));
+registry.register(new StopCommand(playerService));
+registry.register(new PauseCommand(playerService));
+registry.register(new ResumeCommand(playerService));
+registry.register(new LeaveCommand(connectionService, playerService));
+registry.register(new PingCommand(client));
 
 client.once(Events.ClientReady, () => {
-    console.log(`✅ ${client.user.tag} hazır!`);
+    console.log(client.user.tag + ' hazir! (' + registry.all().length + ' komut yuklendi)');
 });
-
-// yt-dlp ile stream URL'sini al
-async function getStreamUrl(videoUrl) {
-    return new Promise((resolve, reject) => {
-        const ytdlp = spawn('yt-dlp', [
-            '-f', 'bestaudio[ext=webm]/bestaudio',
-            '-g',
-            '--no-playlist',
-            '--no-warnings',
-            videoUrl
-        ]);
-
-        let url = '';
-        let errorOutput = '';
-
-        ytdlp.stdout.on('data', (data) => {
-            url += data.toString();
-        });
-
-        ytdlp.stderr.on('data', (data) => {
-            errorOutput += data.toString();
-        });
-
-        ytdlp.on('close', (code) => {
-            if (code === 0) {
-                resolve(url.trim().split('\n')[0]);
-            } else {
-                reject(new Error(`yt-dlp hata: ${errorOutput}`));
-            }
-        });
-
-        ytdlp.on('error', (err) => {
-            reject(new Error(`yt-dlp bulunamadı: ${err.message}`));
-        });
-    });
-}
 
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || !message.content.startsWith(PREFIX)) return;
 
-    const args = message.content.slice(PREFIX.length).trim().split(/ +/);
-    const command = args.shift().toLowerCase();
+    const args    = message.content.slice(PREFIX.length).trim().split(/ +/);
+    const cmdName = args.shift().toLowerCase();
 
-    // !join
-    if (command === 'join') {
-        const voiceChannel = message.member.voice.channel;
-        if (!voiceChannel) return message.reply('❌ Ses kanalına katıl!');
+    const command = registry.resolve(cmdName);
+    if (!command) return;
 
-        const connection = joinVoiceChannel({
-            channelId: voiceChannel.id,
-            guildId: message.guild.id,
-            adapterCreator: message.guild.voiceAdapterCreator,
-        });
-
-        try {
-            await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
-            message.reply(`✅ **${voiceChannel.name}** kanalına bağlandım!`);
-        } catch (error) {
-            connection.destroy();
-            message.reply(`❌ Hata: ${error.message}`);
-        }
-    }
-
-    // !play
-    else if (command === 'play' || command === 'p') {
-        if (!args.length) return message.reply('❌ Kullanım: `!play <url veya arama>`');
-
-        const voiceChannel = message.member.voice.channel;
-        if (!voiceChannel) return message.reply('❌ Ses kanalına katıl!');
-
-        const query = args.join(' ');
-
-        try {
-            await message.reply('🔍 Aranıyor...');
-
-            // Değişkenler scope dışında
-            let videoUrl;
-            let videoTitle;
-            let videoThumbnail = null;
-            let videoDuration = 'Bilinmiyor';
-
-            // URL kontrolü
-            if (query.includes('youtube.com') || query.includes('youtu.be')) {
-                videoUrl = query;
-                console.log('[DEBUG] URL modu:', videoUrl);
-                try {
-                    const video = await YouTube.getVideo(query);
-                    videoTitle = video.title;
-                    videoThumbnail = video.thumbnail?.url;
-                    videoDuration = video.durationFormatted || 'Bilinmiyor';
-                    console.log('[DEBUG] Video bulundu:', videoTitle);
-                } catch (e) {
-                    console.log('[DEBUG] getVideo hatası:', e.message);
-                    videoTitle = 'YouTube Video';
-                }
-            } else {
-                console.log('[DEBUG] Arama modu:', query);
-                const video = await YouTube.searchOne(query);
-                if (!video) return message.channel.send('❌ Video bulunamadı!');
-                videoUrl = video.url;
-                videoTitle = video.title;
-                videoThumbnail = video.thumbnail?.url;
-                videoDuration = video.durationFormatted || 'Bilinmiyor';
-                console.log('[DEBUG] Bulunan URL:', videoUrl);
-            }
-
-            message.channel.send(`⏬ **${videoTitle}** hazırlanıyor...`);
-
-            console.log('[DEBUG] yt-dlp çağrılıyor');
-            const streamUrl = await getStreamUrl(videoUrl);
-            console.log('[DEBUG] Stream URL alındı');
-
-            // Kanala bağlan
-            let connection = getVoiceConnection(message.guild.id);
-            if (!connection) {
-                console.log('[DEBUG] Yeni bağlantı kuruluyor');
-                connection = joinVoiceChannel({
-                    channelId: voiceChannel.id,
-                    guildId: message.guild.id,
-                    adapterCreator: message.guild.voiceAdapterCreator,
-                });
-                await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
-                console.log('[DEBUG] Bağlantı hazır');
-            }
-
-            const resource = createAudioResource(streamUrl, {
-                inputType: StreamType.Arbitrary,
-            });
-            console.log('[DEBUG] Resource oluşturuldu');
-
-            let player = players.get(message.guild.id);
-            if (!player) {
-                player = createAudioPlayer();
-                players.set(message.guild.id, player);
-
-                player.on(AudioPlayerStatus.Idle, () => {
-                    console.log('Çalma bitti');
-                });
-
-                player.on('error', error => {
-                    console.error('[PLAYER HATA]:', error);
-                    message.channel.send(`❌ Çalma hatası: ${error.message}`);
-                });
-            }
-
-            player.play(resource);
-            connection.subscribe(player);
-            console.log('[DEBUG] Play çağrıldı');
-
-            // ✅ EMBED
-            const embed = new EmbedBuilder()
-                .setColor(0xFF0000)
-                .setTitle('🎵 Şimdi Çalıyor')
-                .setDescription(`**${videoTitle}**`)
-                .addFields(
-                    { name: '⏱️ Süre', value: videoDuration, inline: true },
-                    { name: '👤 İsteyen', value: message.author.username, inline: true },
-                    { name: '🔗 Link', value: `[YouTube](${videoUrl})`, inline: true }
-                )
-                .setFooter({ text: 'teXas Bot', iconURL: client.user.displayAvatarURL() })
-                .setTimestamp();
-
-            // Thumbnail varsa ekle
-            if (videoThumbnail) {
-                embed.setThumbnail(videoThumbnail);
-            }
-
-            message.channel.send({ embeds: [embed] });
-
-        } catch (error) {
-            console.error('[ANA HATA]:', error);
-            console.error('[STACK]:', error.stack);
-            message.channel.send(`❌ Hata: ${error.message}`);
-        }
-    }
-
-    // !stop
-    else if (command === 'stop') {
-        const player = players.get(message.guild.id);
-        if (player) {
-            player.stop();
-            message.reply('⏹️ Durduruldu');
-        } else {
-            message.reply('❌ Çalan bir şey yok');
-        }
-    }
-
-    // !pause
-    else if (command === 'pause') {
-        const player = players.get(message.guild.id);
-        if (player) {
-            player.pause();
-            message.reply('⏸️ Duraklatıldı');
-        }
-    }
-
-    // !resume
-    else if (command === 'resume') {
-        const player = players.get(message.guild.id);
-        if (player) {
-            player.unpause();
-            message.reply('▶️ Devam ediyor');
-        }
-    }
-
-    // !leave
-    else if (command === 'leave' || command === 'dc') {
-        const connection = getVoiceConnection(message.guild.id);
-        if (connection) {
-            connection.destroy();
-            players.delete(message.guild.id);
-            message.reply('👋 Ayrıldım');
-        } else {
-            message.reply('❌ Zaten kanalda değilim');
-        }
-    }
-
-    // !ping
-    else if (command === 'ping') {
-        message.reply(`🏓 ${client.ws.ping}ms`);
+    try {
+        await command.execute(message, args);
+    } catch (err) {
+        console.error('[index] Komut hatasi (' + cmdName + '):', err);
+        message.reply('Beklenmedik bir hata olustu: ' + err.message).catch(() => {});
     }
 });
 
